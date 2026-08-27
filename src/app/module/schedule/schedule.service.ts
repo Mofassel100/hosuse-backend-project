@@ -55,13 +55,20 @@ const createSchedule = async (payload : ICreateSchedulePayload , user : RequestU
 
 
     const durationInMinutes = differenceInMinutes(
-        payload.startDateTime,
-        payload.endDateTime
+        payload.endDateTime,
+        payload.startDateTime
     )
 
     const MINUTES_ALLOCATED_PER_SLOT = 20
 
     const totalSlots = Math.floor(durationInMinutes / MINUTES_ALLOCATED_PER_SLOT)
+
+    if (totalSlots < 1) {
+        throw new AppError(
+            httpStatus.CONFLICT,
+            `Schedule Must Be At Least ${MINUTES_ALLOCATED_PER_SLOT} Minutes Long To Fit One Slot`,
+        );
+    }
 
     const schedule = await prisma.schedule.create({
         data : {
@@ -339,13 +346,20 @@ const updateSchedule = async (scheduleId : string, payload : IUpdateSchedulePayl
     }
 
     const durationInMinutes = differenceInMinutes(
-        payload.startDateTime,
-        payload.endDateTime
+        payload.endDateTime,
+        payload.startDateTime
     )
 
     const MINUTES_ALLOCATED_PER_SLOT = 20
 
     const totalSlots = Math.floor(durationInMinutes / MINUTES_ALLOCATED_PER_SLOT)
+
+    if (totalSlots < 1) {
+        throw new AppError(
+            httpStatus.CONFLICT,
+            `Schedule Must Be At Least ${MINUTES_ALLOCATED_PER_SLOT} Minutes Long To Fit One Slot`,
+        );
+    }
 
     const updatedSchedule = await prisma.schedule.update({
         where : {
