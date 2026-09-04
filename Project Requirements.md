@@ -1,176 +1,1191 @@
-# Project Requirements — PH Healthcare System
+# Project Requirements — House & Roommate Platform
 
 ## 1. Overview
 
-PH Healthcare System connects patients with doctors for online consultations. A patient finds a doctor, books an open slot on a published schedule, pays for it, and joins a video call at the scheduled time. The doctor runs the consultation and afterward sends back a digital prescription. Admins and super admins keep the platform running: they approve doctors, manage accounts, and handle the people side of the platform so doctors and patients only have to deal with appointments.
+House & Roommate Platform connects customers/seeker with property providers for house, apartment, room, and roommate rentals.
 
-This document is the product spec — what the system must do and the exact rules it must follow. It is not the database schema and not the API design; those come next, and every rule below is written so that whoever designs them doesn't have to guess. The [README](./README.md) describes what's actually implemented in the code today, which is currently far behind this document.
+A customer can search for available properties or rooms, view property details, check availability, submit a rental request, make a payment, and manage their booking.
 
-## 2. User roles
+A provider can create and manage property listings, add rooms, publish availability, review rental requests, approve or reject customers, and manage bookings.
 
-Four roles exist: **Super Admin**, **Admin**, **Doctor**, **Patient**.
+Admins manage the entire platform: users, providers, properties, rental requests, bookings, payments, reviews, and platform activity.
 
-| Role           | How they join the platform                                                   | How they log in                  |
-| -------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
-| **Patient**    | Registers directly — email/password or Google                                  | Email/password or Google           |
-| **Doctor**     | Applies directly, then waits for an Admin or Super Admin to approve them       | Email/password only                |
-| **Admin**      | Created by a Super Admin or an existing Admin — cannot self-register           | Email/password only                |
-| **Super Admin**| Created by another Super Admin — cannot self-register                          | Email/password only                |
+This document describes what the system must do and the business rules it must follow. The implementation uses **Node.js, TypeScript, Express.js, PostgreSQL, and Prisma ORM**.
 
-Google login is a **patient-only** feature. Doctors, Admins, and Super Admins always use email and password.
+---
 
-### 2.1 Who can manage whom
+# 2. User Roles
 
-Admin and Super Admin have the same day-to-day powers — approving doctors, managing patients, creating new admins — with two exceptions reserved for Super Admin:
+Three roles exist:
 
-| Action                              | Admin | Super Admin |
-| ------------------------------------ | :---: | :----------: |
-| Approve or reject a doctor application | ✅    | ✅           |
-| Block or unblock a Doctor             | ✅    | ✅           |
-| Block or unblock a Patient            | ✅    | ✅           |
-| Create a new Admin                    | ✅    | ✅           |
-| Create a new Super Admin              | ❌    | ✅           |
-| Block or unblock an Admin             | ❌    | ✅           |
-| Block or unblock a Super Admin        | ❌    | ✅           |
+- **Admin**
+- **Provider**
+- **Customer**
 
-In short: Admin can act on doctors and patients freely, but only a Super Admin can act on another Admin or Super Admin — including blocking one.
+| Role         | How they join                                    | How they log in |
+| ------------ | ------------------------------------------------ | --------------- |
+| **Customer** | Registers directly with name, email and password | Email/password  |
+| **Provider** | Applies through provider registration            | Email/password  |
+| **Admin**    | Created by an existing Admin                     | Email/password  |
 
-These actions live behind three management screens: **Doctor Management** (approve/reject applications, block/unblock doctors), **Patient Management** (block/unblock patients), and **Admin Management** (create and, where allowed, block admins and super admins).
+A user cannot select `ADMIN` during normal registration.
 
-## 3. Accounts and authentication
+---
 
-### 3.1 Registration
+## 2.1 Who Can Manage Whom
 
-- **Patient** registers with name, email, and password — or with Google. Either way, they land in the system as a Patient; there is no way to register directly as anything else.
-- **Doctor** applies through a separate "apply to become a doctor" flow (see [Section 5](#5-doctor-application-and-approval)). They don't land in the system as a working Doctor until an Admin or Super Admin approves them.
-- **Admin** and **Super Admin** are never self-registered. They only come into existence when an existing Admin or Super Admin creates them (see [Section 4](#4-admin-and-super-admin-management)).
+| Action                   | Customer | Provider |  Admin   |
+| ------------------------ | :------: | :------: | :------: |
+| Register                 |    ✅    |    ❌    |    ❌    |
+| Apply as Provider        |    ❌    |    ✅    |    ❌    |
+| View properties          |    ✅    |    ✅    |    ✅    |
+| Create property          |    ❌    |    ✅    |    ❌    |
+| Update own property      |    ❌    |    ✅    |    ❌    |
+| Delete own property      |    ❌    |    ✅    |    ❌    |
+| Create rental request    |    ✅    |    ❌    |    ❌    |
+| Approve rental request   |    ❌    |    ✅    |    ❌    |
+| Reject rental request    |    ❌    |    ✅    |    ❌    |
+| Make payment             |    ✅    |    ❌    |    ❌    |
+| Add review               |    ✅    |    ❌    |    ❌    |
+| Manage customers         |    ❌    |    ❌    |    ✅    |
+| Manage providers         |    ❌    |    ❌    |    ✅    |
+| Approve provider         |    ❌    |    ❌    |    ✅    |
+| Block/unblock user       |    ❌    |    ❌    |    ✅    |
+| Manage all properties    |    ❌    |    ❌    |    ✅    |
+| Manage payments          |    ❌    |    ❌    |    ✅    |
+| View platform statistics |    ❌    | Own data | All data |
 
-### 3.2 Email OTP verification
+---
 
-Every registration that a person fills in themselves — patient credential registration and doctor application — must be verified with a one-time password (OTP) sent to their email before the account is usable. Google registration doesn't need this, since Google has already verified the email. Admin and Super Admin accounts skip OTP entirely, because they're created by someone else, not self-registered (see [Section 4](#4-admin-and-super-admin-management) for how those are secured instead).
+# 3. Accounts and Authentication
 
-### 3.3 Login
+## 3.1 Customer Registration
 
-- Patients log in with email/password or with Google — and it's the same account either way. A patient who originally registered with email/password can also log in with Google afterward (matched by email), and vice versa; the system doesn't treat these as two separate patients.
-- Doctors, Admins, and Super Admins log in with email/password only — always.
+A customer registers with:
 
-### 3.4 Forgot password / reset password
-
-Two-step flow, available to anyone who logs in with a password:
-
-1. **Forgot password** — patient submits their email; system emails them an OTP.
-2. **Reset password** — patient submits the OTP plus a new password; system verifies the OTP and updates the password.
-
-### 3.5 Change password (logged in)
-
-A logged-in user submits their **current password** and a **new password**. This is different from reset: it's for someone who remembers their current password and just wants to change it. Someone who's forgotten their current password uses forgot-password/reset-password instead — change-password is not a substitute for that flow.
-
-### 3.6 Set password (patients only)
-
-A patient who first signed up through Google doesn't have a password yet — Google login never asks for one. **Set Password** lets that patient choose one, so afterward they can log in either way: with Google or with email/password. This feature exists only for patients, since Doctors, Admins, and Super Admins never use Google login and always have a password from the moment their account is created.
-
-### 3.7 Tokens and sessions
-
-Every successful login or registration — credential or Google, any role — issues an **access token** and a **refresh token**, both set as cookies.
-
-### 3.8 Welcome emails
-
-| Event                                             | Recipient          | Contains                                                        |
-| --------------------------------------------------- | -------------------- | ------------------------------------------------------------------ |
-| Patient's first registration, right after auto-login | Patient's email       | Welcome message                                                    |
-| Doctor's application gets approved                    | Doctor's email        | Welcome message                                                    |
-| Admin or Super Admin gets created                     | Their **personal** email | Their new **organization** email (their login), their generated password, and a prompt to change that password after logging in |
-
-## 4. Admin and Super Admin management
-
-Only a Super Admin or an Admin can create a new Admin (a Super Admin can also create a new Super Admin — see the permissions table in [Section 2.1](#21-who-can-manage-whom)). The creator fills in two email addresses for the new account:
-
-- **Organization email** — the account's login identity going forward, assigned by whoever creates the account (e.g. a company email).
-- **Personal email** — the actual person's own inbox, used only to deliver the welcome message.
-
-The system generates a password for the new account and sends it to the **personal** email inside the welcome email, along with the organization email and a prompt to change the password on first login. There is no self-registration and no OTP step for Admin or Super Admin accounts — the invite-and-generated-password flow, plus the forced password change, is what secures them instead.
-
-## 5. Doctor application and approval
-
-1. A prospective doctor applies through a public "apply to become a doctor" endpoint.
-2. As part of applying, they verify their email with an OTP — the same requirement as patient registration.
-3. Their application then sits pending in **Doctor Management**, reviewed by an Admin or Super Admin, who approves or rejects it.
-4. On approval, the doctor account becomes active, and a welcome email goes out. Only from this point can the doctor log in and use the platform — an unapproved application cannot log in at all.
-
-## 6. Doctor schedules
-
-A schedule is what a doctor publishes to say "I'm available on this date, during this time range, book me." Each schedule is for **one calendar date** and belongs to **one doctor**.
-
-### 6.1 Creating a schedule
-
-| Rule                       | Detail                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------------ |
-| One schedule per day        | A doctor can have at most one schedule per calendar date.                                        |
-| Time range length            | Minimum 3 hours, maximum 8 hours.                                                                 |
-| Must stay within one day     | Start and end time must be on the same calendar date — e.g. `9:00 AM–5:00 PM` or `3:00 PM–11:00 PM` are fine, but a range like `9:00 PM–3:00 AM` (crossing into the next day) is not allowed. |
-| Meet link                    | The doctor provides a video call link — from whichever video call tool they use — as part of creating the schedule. Every appointment booked into that schedule uses this same link. |
-| Status                       | A schedule starts as **draft**. Patients cannot see it at all until the doctor **publishes** it. |
-| Total slots                  | Calculated automatically: the whole time range divided into 20-minute slots. Example: a `3:00 PM–9:00 PM` schedule is 6 hours (360 minutes), giving 18 slots of 20 minutes each. |
-
-### 6.2 Editing a published schedule
-
-Once published, different parts of a schedule lock at different points:
-
-| Field                          | Can it still be changed?                                                    |
-| --------------------------------- | ---------------------------------------------------------------------------- |
-| **Date**                          | No — locked as soon as the schedule is published.                            |
-| **Time range**                    | Yes, but only until the first appointment is booked into it. Once one slot is booked, the time range is locked (since re-slotting would break already-booked serial numbers). |
-| **Status, meet link, and everything else** | Yes, any time — booking a slot doesn't lock these.                   |
-
-## 7. Patient appointment booking
-
-### 7.1 What a patient can see
-
-Patients only ever see **today's** schedules — never a future date, and never a past one. Within today, a schedule is visible (and bookable) only up until its own start time:
-
-> Example: a schedule runs `3:00 PM–9:00 PM`. Before 3:00 PM, patients can see it and book into it. At 3:00 PM the schedule disappears from patient view — no more bookings, even though the consultations are still happening — and it will never reappear (it's not a future schedule anymore, it's today's, and today's window has closed).
-
-A schedule that's fully booked (every slot taken) also stops being shown, for the same reason — there's nothing left to book.
-
-### 7.2 Booking
-
-1. Patient picks an open slot on a visible schedule.
-2. Patient pays for it upfront.
-3. Once payment succeeds, the appointment is created with status **booked**, and it's given a **serial number** — its position among bookings in that schedule (the 1st person to book gets serial 1, the 2nd gets serial 2, and so on).
-4. An invoice PDF — meet link, date, time, and payment details — is emailed to the patient right after payment.
-
-## 8. Appointment lifecycle
-
-An appointment moves through three statuses:
-
-```
-booked  →  ongoing  →  completed
+```text
+name
+email
+password
+phone
 ```
 
-- **Booked** — set automatically once payment succeeds.
-- **Ongoing** — the doctor sets this manually when they start the consultation.
-- **Completed** — the doctor sets this manually when the consultation is finished.
+The default role is:
 
-## 9. Prescriptions
+```text
+CUSTOMER
+```
 
-Once an appointment is **completed**, the doctor can write a prescription for it: key findings plus prescribed medicines. As soon as it's submitted, the system generates a PDF and emails it to the patient. A prescription can't be written for an appointment that isn't completed yet.
+Customers cannot register directly as Admin.
 
-## 10. Cancellation and refunds
+---
 
-Whether a patient gets their money back depends on how close to the schedule's start time they cancel:
+## 3.2 Provider Registration
 
-| When the patient cancels                                                          | Refund? |
-| ------------------------------------------------------------------------------------- | :-------: |
-| More than 1 hour before the schedule's start time                                     | Yes — cancel and refund |
-| From 1 hour before the start time, through the running schedule, or after it's over    | Cancellation still allowed — no refund |
+A provider submits an application containing:
 
-> Example: schedule runs `3:00 PM–9:00 PM`. Cancelling any time before 2:00 PM refunds the payment. Cancelling from 2:00 PM onward — including during the 3–9 PM window itself, or even after 9 PM — still cancels the appointment, but without a refund.
+```text
+name
+email
+password
+phone
+address
+NID/identity information
+property information
+```
 
-## 11. Data models (conceptual)
+The provider starts with:
 
-The database design isn't finalized yet, so this is a description of what each model needs to hold — not a schema.
+```text
+PENDING
+```
 
-- **User** — the shared identity for every role: email, password (nullable — a Google-only patient has none until they set one), linked Google account, role (`SUPER_ADMIN` / `ADMIN` / `DOCTOR` / `PATIENT`), account status (active/blocked), email-verified flag, and a "must change password" flag (used right after an Admin/Super Admin is created). Every account is exactly one User, linked to exactly one of the profiles below based on its role.
-- **Patient profile** — personal info plus medical info.
-- **Doctor profile** — personal info plus professional/expertise info (e.g. specialization).
-- **Admin profile** — personal info, plus the organization email assigned at creation. Shared shape for both Admin and Super Admin; the User's `role` field is what tells them apart.
+The provider cannot publish properties until an Admin approves the application.
+
+---
+
+## 3.3 Login
+
+Users log in with:
+
+```text
+email
+password
+```
+
+After successful login, the backend generates:
+
+```text
+accessToken
+refreshToken
+```
+
+Tokens can be stored in secure HTTP-only cookies or returned according to the application's authentication strategy.
+
+---
+
+# 4. Password Management
+
+## 4.1 Forgot Password
+
+Flow:
+
+```text
+Customer
+   ↓
+Enter Email
+   ↓
+Backend generates OTP
+   ↓
+OTP sent to email
+   ↓
+Customer submits OTP
+   ↓
+Set new password
+```
+
+---
+
+## 4.2 Change Password
+
+A logged-in user provides:
+
+```text
+currentPassword
+newPassword
+```
+
+The backend verifies the current password before updating it.
+
+---
+
+# 5. Provider Management
+
+An interested property owner can apply to become a Provider.
+
+Flow:
+
+```text
+Provider Application
+        ↓
+Email Verification
+        ↓
+Application = PENDING
+        ↓
+Admin reviews application
+        ↓
+       ┌───────────────┐
+       │               │
+    APPROVED        REJECTED
+       │               │
+       ↓               ↓
+ Provider Active    Application End
+```
+
+Only an approved Provider can:
+
+- Create properties
+- Create rooms
+- Publish properties
+- Manage rental requests
+- Manage bookings
+
+---
+
+# 6. Property Management
+
+A Provider can create a property.
+
+A property contains:
+
+```text
+title
+description
+address
+city
+area
+propertyType
+rent
+status
+images
+amenities
+providerId
+```
+
+Example property types:
+
+```text
+APARTMENT
+HOUSE
+SUBLET
+ROOM
+HOSTEL
+```
+
+---
+
+## 6.1 Property Status
+
+A property can have:
+
+```text
+AVAILABLE
+RENTED
+INACTIVE
+```
+
+Only `AVAILABLE` properties are shown in normal customer search results.
+
+---
+
+# 7. Room Management
+
+A property can contain multiple rooms.
+
+A room contains:
+
+```text
+name
+description
+rent
+capacity
+available
+propertyId
+```
+
+Example:
+
+```text
+Property: Green View Apartment
+
+Room 1
+Rent: 8000
+Capacity: 1
+
+Room 2
+Rent: 12000
+Capacity: 2
+
+Room 3
+Rent: 15000
+Capacity: 3
+```
+
+---
+
+# 8. Property Search
+
+Customers can search properties using:
+
+```text
+city
+area
+propertyType
+minimum rent
+maximum rent
+room capacity
+availability
+```
+
+Example:
+
+```text
+GET /api/properties?city=Dhaka
+```
+
+or:
+
+```text
+GET /api/properties?city=Dhaka&minRent=5000&maxRent=15000
+```
+
+---
+
+# 9. Property Pagination
+
+Property list APIs must support pagination.
+
+Example:
+
+```text
+GET /api/properties?page=1&limit=10
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": [],
+  "meta": {
+    "page": 1,
+    "limit": 10,
+    "total": 50,
+    "totalPages": 5
+  }
+}
+```
+
+---
+
+# 10. Rental Request
+
+A customer can request to rent an available room.
+
+Flow:
+
+```text
+Customer
+   ↓
+Search Property
+   ↓
+View Property
+   ↓
+Select Room
+   ↓
+Submit Rental Request
+   ↓
+Provider receives request
+   ↓
+Provider approves/rejects
+```
+
+Rental request statuses:
+
+```text
+PENDING
+APPROVED
+REJECTED
+CANCELLED
+```
+
+---
+
+# 11. Booking
+
+A booking is created after the rental request has been approved and the customer completes the required payment.
+
+Booking contains:
+
+```text
+customerId
+providerId
+propertyId
+roomId
+startDate
+endDate
+rent
+status
+```
+
+Booking statuses:
+
+```text
+PENDING
+CONFIRMED
+CANCELLED
+COMPLETED
+```
+
+---
+
+# 12. Booking Workflow
+
+The complete rental workflow is:
+
+```text
+Customer
+    ↓
+Search Property
+    ↓
+Select Room
+    ↓
+Rental Request
+    ↓
+Provider Approval
+    ↓
+Booking Created
+    ↓
+Payment
+    ↓
+Payment Successful
+    ↓
+Booking CONFIRMED
+    ↓
+Room becomes unavailable
+```
+
+---
+
+# 13. Payment
+
+The platform supports a payment gateway such as:
+
+```text
+Stripe
+SSLCommerz
+bKash
+```
+
+The payment flow is:
+
+```text
+Customer
+    ↓
+Create Booking
+    ↓
+POST /api/payments/create
+    ↓
+Payment Gateway
+    ↓
+Customer Pays
+    ↓
+Webhook
+    ↓
+Verify Payment
+    ↓
+Payment = PAID
+    ↓
+Booking = CONFIRMED
+    ↓
+Room = unavailable
+```
+
+The backend must not trust payment status sent directly from the frontend.
+
+Payment must be verified using the payment gateway's server-side webhook/callback.
+
+---
+
+# 14. Payment Status
+
+Payment can have:
+
+```text
+PENDING
+PAID
+FAILED
+REFUNDED
+```
+
+Payment information:
+
+```text
+id
+userId
+bookingId
+amount
+status
+transactionId
+paymentGateway
+createdAt
+updatedAt
+```
+
+---
+
+# 15. Cancellation and Refund
+
+Customers can cancel a booking according to the platform's cancellation policy.
+
+Example business rule:
+
+| Cancellation time               |            Refund |
+| ------------------------------- | ----------------: |
+| More than 48 hours before start |    ✅ Full refund |
+| 24–48 hours before start        | ⚠️ Partial refund |
+| Less than 24 hours              |      ❌ No refund |
+| After rental start              |      ❌ No refund |
+
+The exact refund policy can be configured by the Admin.
+
+---
+
+# 16. Reviews
+
+A customer can review a property after completing a rental.
+
+Review contains:
+
+```text
+userId
+propertyId
+rating
+comment
+```
+
+Rating:
+
+```text
+1 → 5
+```
+
+A customer cannot submit multiple reviews for the same property unless the business rules explicitly allow it.
+
+Example:
+
+```json
+{
+  "propertyId": "property-id",
+  "rating": 5,
+  "comment": "Very clean and comfortable room."
+}
+```
+
+---
+
+# 17. Favorites
+
+Customers can save properties to their favorites.
+
+Endpoints:
+
+```text
+POST   /api/favorites/:propertyId
+GET    /api/favorites
+DELETE /api/favorites/:propertyId
+```
+
+A customer cannot add the same property twice.
+
+Database rule:
+
+```text
+unique(userId, propertyId)
+```
+
+---
+
+# 18. Admin Dashboard
+
+Admin can view:
+
+```text
+Total Customers
+Total Providers
+Total Properties
+Total Rooms
+Total Bookings
+Total Payments
+Total Revenue
+Pending Provider Applications
+Pending Rental Requests
+```
+
+Example:
+
+```json
+{
+  "users": 250,
+  "providers": 45,
+  "properties": 120,
+  "rooms": 380,
+  "bookings": 540,
+  "revenue": 1250000
+}
+```
+
+---
+
+# 19. Admin Operations
+
+Admin can:
+
+```text
+Approve Provider
+Reject Provider
+Block Customer
+Unblock Customer
+Block Provider
+Unblock Provider
+Delete Property
+Manage Users
+Manage Reviews
+Manage Bookings
+View Payments
+View Reports
+```
+
+Only Admin can access administrative endpoints.
+
+---
+
+# 20. API Endpoints
+
+## Authentication
+
+```text
+POST   /api/auth/register
+POST   /api/auth/login
+POST   /api/auth/refresh-token
+POST   /api/auth/logout
+POST   /api/auth/forgot-password
+POST   /api/auth/reset-password
+POST   /api/auth/change-password
+```
+
+## User
+
+```text
+GET    /api/users/me
+PATCH  /api/users/me
+GET    /api/users/:id
+```
+
+## Provider
+
+```text
+POST   /api/providers/apply
+GET    /api/providers/me
+PATCH  /api/providers/me
+GET    /api/providers/:id
+```
+
+## Property
+
+```text
+POST   /api/properties
+GET    /api/properties
+GET    /api/properties/:id
+PATCH  /api/properties/:id
+DELETE /api/properties/:id
+```
+
+## Room
+
+```text
+POST   /api/properties/:propertyId/rooms
+GET    /api/properties/:propertyId/rooms
+GET    /api/rooms/:id
+PATCH  /api/rooms/:id
+DELETE /api/rooms/:id
+```
+
+## Rental Request
+
+```text
+POST   /api/rental-requests
+GET    /api/rental-requests/my
+GET    /api/rental-requests/:id
+PATCH  /api/rental-requests/:id/cancel
+PATCH  /api/rental-requests/:id/approve
+PATCH  /api/rental-requests/:id/reject
+```
+
+## Booking
+
+```text
+POST   /api/bookings
+GET    /api/bookings/my
+GET    /api/bookings/:id
+PATCH  /api/bookings/:id/cancel
+```
+
+## Payment
+
+```text
+POST   /api/payments/create
+POST   /api/payments/webhook
+GET    /api/payments
+GET    /api/payments/:id
+```
+
+## Review
+
+```text
+POST   /api/reviews
+GET    /api/properties/:propertyId/reviews
+PATCH  /api/reviews/:id
+DELETE /api/reviews/:id
+```
+
+## Favorite
+
+```text
+POST   /api/favorites/:propertyId
+GET    /api/favorites
+DELETE /api/favorites/:propertyId
+```
+
+## Admin
+
+```text
+GET    /api/admin/dashboard
+GET    /api/admin/users
+PATCH  /api/admin/users/:id/block
+PATCH  /api/admin/users/:id/unblock
+GET    /api/admin/providers
+PATCH  /api/admin/providers/:id/approve
+PATCH  /api/admin/providers/:id/reject
+GET    /api/admin/properties
+DELETE /api/admin/properties/:id
+GET    /api/admin/bookings
+GET    /api/admin/payments
+```
+
+This provides significantly more than the required **20 API endpoints**.
+
+---
+
+# 21. Database Models
+
+The main Prisma models are:
+
+```text
+User
+Profile
+Property
+Room
+RentalRequest
+Booking
+Payment
+Review
+Favorite
+```
+
+Relationships:
+
+```text
+User
+ ├── Profile
+ ├── Properties
+ ├── RentalRequests
+ ├── Bookings
+ ├── Payments
+ ├── Reviews
+ └── Favorites
+
+Property
+ ├── Rooms
+ ├── RentalRequests
+ ├── Bookings
+ ├── Reviews
+ └── Favorites
+
+Room
+ ├── RentalRequests
+ └── Bookings
+
+Booking
+ └── Payment
+```
+
+---
+
+# 22. Prisma Role Enum
+
+```prisma
+enum Role {
+  CUSTOMER
+  PROVIDER
+  ADMIN
+}
+```
+
+---
+
+# 23. Prisma Status Enums
+
+```prisma
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum ProviderStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PropertyStatus {
+  AVAILABLE
+  RENTED
+  INACTIVE
+}
+
+enum RentalRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+```
+
+---
+
+# 24. Authentication & Authorization
+
+Authentication:
+
+```text
+JWT
++
+Access Token
++
+Refresh Token
++
+bcrypt
+```
+
+Authorization:
+
+```text
+checkAuth()
+        ↓
+verify JWT
+        ↓
+get user
+        ↓
+check role
+        ↓
+allow / reject
+```
+
+Example:
+
+```typescript
+router.post(
+  "/properties",
+  checkAuth(Role.PROVIDER),
+  validateRequest(createPropertySchema),
+  PropertyController.createProperty,
+);
+```
+
+Admin:
+
+```typescript
+router.get(
+  "/admin/dashboard",
+  checkAuth(Role.ADMIN),
+  AdminController.dashboard,
+);
+```
+
+---
+
+# 25. Validation
+
+Use **Zod** for all:
+
+```text
+POST
+PUT
+PATCH
+```
+
+Example:
+
+```typescript
+const createPropertySchema = z.object({
+  body: z.object({
+    title: z.string().min(3),
+    description: z.string().min(10),
+    address: z.string().min(5),
+    city: z.string().min(2),
+    rent: z.number().positive(),
+  }),
+});
+```
+
+---
+
+# 26. Database Transactions
+
+Complex operations must use Prisma transactions.
+
+Example booking/payment workflow:
+
+```text
+Create Booking
+      +
+Create Payment
+      +
+Update Room Availability
+```
+
+These operations should be handled atomically.
+
+```typescript
+await prisma.$transaction(async (tx) => {
+  const booking = await tx.booking.create({
+    data: bookingData,
+  });
+
+  await tx.payment.create({
+    data: paymentData,
+  });
+
+  await tx.room.update({
+    where: { id: roomId },
+    data: { available: false },
+  });
+
+  return booking;
+});
+```
+
+If one operation fails, the transaction rolls back.
+
+---
+
+# 27. Database Indexes
+
+Frequently searched fields should have indexes:
+
+```prisma
+@@index([email])
+@@index([role])
+@@index([city])
+@@index([status])
+@@index([providerId])
+@@index([propertyId])
+@@index([customerId])
+```
+
+This improves search and filtering performance.
+
+---
+
+# 28. Project Structure
+
+```text
+house-backend-project/
+│
+├── src/
+│   ├── app/
+│   │   ├── routes.ts
+│   │   └── index.ts
+│   │
+│   ├── config/
+│   │   ├── env.ts
+│   │   └── database.ts
+│   │
+│   ├── modules/
+│   │   ├── auth/
+│   │   ├── user/
+│   │   ├── provider/
+│   │   ├── property/
+│   │   ├── room/
+│   │   ├── rentalRequest/
+│   │   ├── booking/
+│   │   ├── payment/
+│   │   ├── review/
+│   │   ├── favorite/
+│   │   └── admin/
+│   │
+│   ├── middlewares/
+│   │   ├── auth.ts
+│   │   ├── validateRequest.ts
+│   │   ├── notFound.ts
+│   │   └── globalErrorHandler.ts
+│   │
+│   ├── utils/
+│   │   ├── jwt.ts
+│   │   ├── bcrypt.ts
+│   │   ├── catchAsync.ts
+│   │   └── sendResponse.ts
+│   │
+│   ├── types/
+│   │   └── index.d.ts
+│   │
+│   └── server.ts
+│
+├── prisma/
+│   ├── schema.prisma
+│   └── seed.ts
+│
+├── .env
+├── .env.example
+├── .gitignore
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+---
+
+# 29. Five-Day Development Plan
+
+## Day 1 — Planning, Architecture & Database
+
+```text
+✓ Select Housing & Roommate Platform
+✓ Define Customer / Provider / Admin
+✓ Define permissions
+✓ Design ERD
+✓ Initialize Node.js
+✓ Initialize TypeScript
+✓ Initialize Express
+✓ Configure PostgreSQL
+✓ Configure Prisma
+✓ Create schema
+✓ Run migration
+✓ Create seed data
+✓ Initialize Git
+✓ Deploy initial backend
+```
+
+## Day 2 — Authentication & Core APIs
+
+```text
+✓ Customer registration
+✓ Provider application
+✓ Login
+✓ JWT
+✓ Refresh token
+✓ bcrypt
+✓ Authentication middleware
+✓ RBAC
+✓ User profile
+✓ Property CRUD
+✓ Room CRUD
+✓ Postman collection
+```
+
+## Day 3 — Business Logic
+
+```text
+✓ Rental request
+✓ Booking
+✓ Reviews
+✓ Favorites
+✓ Pagination
+✓ Filtering
+✓ Sorting
+✓ Zod validation
+✓ Global error handler
+✓ Prisma transactions
+✓ Database indexes
+```
+
+## Day 4 — Payment & Testing
+
+```text
+✓ Stripe / SSLCommerz / bKash
+✓ Payment creation
+✓ Payment webhook
+✓ Payment verification
+✓ Refund handling
+✓ Payment history
+✓ Test all 3 roles
+✓ Test unauthorized requests
+✓ Test validation errors
+✓ Test duplicate requests
+✓ Test not-found errors
+✓ Finalize Postman/Swagger
+```
+
+## Day 5 — Deployment & Submission
+
+```text
+✓ Production environment variables
+✓ Production PostgreSQL
+✓ Deploy backend
+✓ Test live APIs
+✓ Test authentication
+✓ Test RBAC
+✓ Test payment
+✓ 20+ meaningful Git commits
+✓ Final README
+✓ Admin demo credentials
+✓ API walkthrough video
+✓ Submit project links
+```
+
+---
+
+# 30. Final Architecture
+
+```text
+                    HOUSE PLATFORM
+                           │
+                           ▼
+                    Express.js API
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+          Customer      Provider        Admin
+             │             │             │
+             └─────────────┼─────────────┘
+                           ▼
+                    Authentication
+                       JWT + RBAC
+                           │
+                           ▼
+                       Controllers
+                           │
+                           ▼
+                        Services
+                           │
+                           ▼
+                       Prisma ORM
+                           │
+                           ▼
+                      PostgreSQL
+                           │
+           ┌───────────────┼───────────────┐
+           ▼               ▼               ▼
+        Payment         Cloudinary        Redis
+        Gateway          Images           Cache
+```
+
+## Core Business Flow
+
+```text
+CUSTOMER
+   │
+   ├── Register/Login
+   │
+   ├── Search Properties
+   │
+   ├── View Room
+   │
+   ├── Rental Request
+   │
+   ├── Provider Approval
+   │
+   ├── Booking
+   │
+   ├── Payment
+   │
+   ├── Confirm Booking
+   │
+   └── Review
+             ▲
+             │
+         PROVIDER
+             │
+             ├── Apply
+             ├── Admin Approval
+             ├── Create Property
+             ├── Add Rooms
+             ├── Manage Requests
+             └── Manage Bookings
+
+             ▲
+             │
+           ADMIN
+             │
+             ├── Manage Users
+             ├── Approve Providers
+             ├── Manage Properties
+             ├── Manage Bookings
+             ├── Manage Payments
+             └── Dashboard
+```
