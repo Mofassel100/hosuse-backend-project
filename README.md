@@ -1,257 +1,288 @@
-# PH Healthcare System — Backend
-
-REST API for a doctor-appointment platform: patients book consultations, doctors run them, admins manage the platform. This repo is the backend only.
-
-**Stack:** Node.js · Express 5 · TypeScript · Prisma 7 · PostgreSQL · JWT auth
-
-## Where the project stands today
-
-This is an early build, not the finished product. Right now the only working feature is authentication — a patient can register, log in, and fetch their own profile. Appointments, doctor schedules, payments, and everything else in [`Project Requirements.md`](./Project%20Requirements.md) is planned but not built yet.
-
-Treat this README as a description of what the code *actually does today*, including its rough edges. A few are called out directly in [Known limitations](#known-limitations) further down — read that section before assuming something is broken on your end.
-
-## Prerequisites
-
-| Tool           | Version | Check with |
-| -------------- | ------- | ---------- |
-| **Node.js**    | 20+     | `node -v`  |
-| **PostgreSQL** | 14+     | `psql -V`  |
-
-Any package manager works (npm, pnpm, yarn, bun). The examples below use `npm`.
-
-## Getting started
-
-**1. Install dependencies**
-
-```bash
-npm install
-```
-
-**2. Set up your environment file**
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` and point `DATABASE_URL` at a Postgres database you can connect to:
-
-```
-DATABASE_URL="postgresql://YOUR_USERNAME:YOUR_PASSWORD@localhost:5432/ph_healthcare?schema=public"
-```
-
-The database doesn't need to exist beforehand — `prisma migrate dev` creates it. The other variables in `.env.example` are fine to leave as-is for local development; see [Environment variables](#environment-variables) for what each one does.
-
-**3. Generate the Prisma client**
-
-```bash
-npx prisma generate
-```
-
-Prisma writes a typed client into `src/generated/prisma`. That folder is git-ignored, so a fresh clone never has it, and almost every file under `src/` imports from it — skip this step and nothing compiles. Re-run it any time you change a file in `prisma/schema/`.
-
-**4. Run the migrations**
-
-```bash
-npx prisma migrate dev
-```
-
-This creates the `user` and `patient` tables using the SQL already committed under `prisma/migrations/`.
-
-**5. Start the server**
-
-```bash
-npm run dev
-```
-
-You should see:
-
-```
-Connected to the database successfully.
-Server is running on port 5000
-```
-
-Confirm it's up:
-
-```bash
-curl http://localhost:5000/
-# {"success":true,"message":"Welcome to PH Healthcare System Backend"}
-```
-
-## Environment variables
-
-`src/app/config/index.ts` is the only place `process.env` is read — application code should import `config` from there rather than reaching for `process.env` directly.
-
-| Variable                  | What it's for                                                      |
-| -------------------------- | ------------------------------------------------------------------ |
-| `NODE_ENV`                 | `development` includes the raw error and stack trace in API error responses |
-| `PORT`                     | Port the HTTP server listens on                                    |
-| `DATABASE_URL`             | Postgres connection string, used by both Prisma and the app        |
-| `JWT_ACCESS_SECRET`        | Signing key for access tokens                                      |
-| `JWT_REFRESH_SECRET`       | Signing key for refresh tokens                                     |
-| `JWT_ACCESS_EXPIRES_IN`    | Access token lifetime (e.g. `15m`, `1d`)                            |
-| `JWT_REFRESH_EXPIRES_IN`   | Refresh token lifetime                                              |
-| `BCRYPT_SALT_ROUNDS`       | Read into config but not wired up yet — password hashing currently uses a hardcoded value (see below) |
-| `BACKEND_URL`              | Read into config but not used anywhere yet                          |
-| `FRONTEND_URL`             | Added to the CORS allowlist                                        |
-
-There's no validation on startup: if a variable is missing, `config` simply holds `undefined` for it, and the app boots anyway. The first sign of trouble is usually a runtime error the moment that value is actually used — for `JWT_ACCESS_SECRET`, that means the very first login or registration.
-
-Before deploying anywhere, replace the JWT secrets — the ones in `.env.example` are placeholders anyone can guess:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-## Project structure
-
-```
-src/
-├── server.ts                       # connects to the DB, then starts listening
-├── app.ts                          # express app: cors, body parsing, routes, error handling
-├── generated/prisma/                # Prisma client — git-ignored, run `npx prisma generate`
-└── app/
-    ├── config/index.ts              # reads and exposes every environment variable
-    ├── lib/prisma.ts                # shared PrismaClient instance — always import this, don't `new` your own
-    ├── middleware/
-    │   ├── checkAuth.ts             # exports `auth(...roles)`, the JWT + role guard
-    │   ├── globalErrorHandler.ts    # turns thrown errors into JSON responses
-    │   └── notFound.ts              # catch-all for unmatched routes
-    ├── utils/
-    │   ├── catchAsync.ts            # wraps async route handlers so thrown errors reach the error handler
-    │   ├── jwt.ts                   # sign / verify helpers
-    │   └── sendResponse.ts          # the standard `{ success, statusCode, message, data }` envelope
-    └── module/
-        └── auth/                    # the one feature module that exists so far
-            ├── auth.route.ts
-            ├── auth.controller.ts
-            ├── auth.service.ts
-            └── auth.interface.ts
-
-prisma/
-├── schema/
-│   ├── schema.prisma                # generator + datasource only
-│   ├── user.prisma
-│   ├── patient.prisma
-│   └── enums.prisma                 # Role, UserStatus, Gender
-└── migrations/                      # generated SQL, committed to git
-```
-
-Prisma's schema is split across multiple files, wired together by `prisma.config.ts` at the repo root. That file also loads `.env` so the Prisma CLI can see `DATABASE_URL`.
-
-**The data model:** a `User` has at most one `Patient` (1-to-1). Registering writes both rows in a single nested Prisma call. Deletes are meant to be soft — there's an `isDeleted` flag and a `deletedAt` timestamp on both models — but nothing in the codebase sets them yet; there's no delete endpoint at all right now.
-
-## The API
-
-Base URL: `http://localhost:5000`
-
-| Method | Path                          | Auth required | Body                         |
-| ------ | ----------------------------- | ------------- | ----------------------------- |
-| `GET`  | `/`                            | –             | health check                  |
-| `POST` | `/api/v1/auth/register`        | –             | `name`, `email`, `password`   |
-| `POST` | `/api/v1/auth/login`           | –             | `email`, `password`           |
-| `GET`  | `/api/v1/auth/me`              | yes           | –                              |
-| `POST` | `/api/v1/auth/refresh-token`   | –             | reads the `refreshToken` cookie |
-
-Every response from `sendResponse` (i.e. everything except the root route) has this shape:
-
-```json
-{ "success": true, "statusCode": 200, "message": "...", "data": {} }
-```
-
-### Tokens: use the response body, not the cookies
-
-`register` and `login` return `accessToken` and `refreshToken` two ways: in the JSON body, and as cookies. **Use the JSON body.** The cookies are set with `sameSite: "none"` but `secure: false` — that combination is invalid under the cookie spec, and modern browsers silently drop the cookie rather than send it. Grab `data.accessToken` from the response and send it yourself:
-
-```bash
-curl -X POST http://localhost:5000/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Test Patient","email":"patient@example.com","password":"password123"}'
-
-curl http://localhost:5000/api/v1/auth/me \
-  -H "Authorization: Bearer <accessToken from the response above>"
-```
-
-`Authorization` accepts either `Bearer <token>` or the raw token with no prefix.
-
-## Roles and authentication
-
-Four roles exist in the schema — `SUPER_ADMIN`, `ADMIN`, `DOCTOR`, `PATIENT` — but **registration always creates a `PATIENT`.** `registerPatient` hardcodes `Role.PATIENT` and only reads `name`, `email`, and `password` out of the request body, so sending `"role": "ADMIN"` does nothing. There's no admin module and no seed script, so the other three roles aren't reachable through the API yet. To test them, register a normal user and change their `role` directly in the database with `npx prisma studio` (opens at `http://localhost:5555`) — then log in again, since the role is baked into the token at login time and an old token keeps the old role.
-
-`auth(...roles)`, exported from `checkAuth.ts`, is the route guard:
-
-```ts
-router.get('/me', auth(Role.ADMIN, Role.DOCTOR, Role.PATIENT, Role.SUPER_ADMIN), AuthController.getMe)
-```
-
-What it actually does, in order:
-
-1. Reads the token from the `accessToken` cookie, falling back to the `Authorization` header.
-2. Verifies the JWT signature.
-3. Checks the role **from the token payload** against the roles the route allows.
-4. Looks the user up in the database by matching `id`, `email`, `name`, *and* `role` all at once — if any of those four have changed since the token was issued, the lookup fails and the request is rejected, even though the account still exists.
-5. Rejects the request only if the user's `status` is exactly `BLOCKED`. It does **not** check `isDeleted` or a `DELETED` status, so a soft-deleted account can still authenticate as long as `status` wasn't also set to `BLOCKED`.
-
-## Known limitations
-
-Worth knowing before you spend time debugging what looks like your own mistake:
-
-- **Every error comes back as HTTP 500.** `globalErrorHandler` works out the "correct" status code internally but always sends the response with `500`, regardless. Read the `message` field, not the status code, to see what actually went wrong.
-- **No request validation.** Nothing checks that `email` looks like an email or that `password` meets any length requirement — Postgres and Prisma are the only things that will reject bad input, and usually not with a helpful message.
-- **`BCRYPT_SALT_ROUNDS` isn't used.** Password hashing in `auth.service.ts` calls `bcrypt.hash(password, 8)` with a hardcoded cost factor; the environment variable is read into `config` but nothing references it yet.
-- **No tests.** `npm test` is a placeholder.
-
-## Extending this starter
-
-New features go under `src/app/module/<name>/` as four files with strict responsibilities:
-
-| File                   | Responsibility                                                    |
-| ---------------------- | ------------------------------------------------------------------- |
-| `<name>.route.ts`      | Wires `auth(...roles)` to controller functions, exports `<Name>Routes` |
-| `<name>.controller.ts` | Reads `req.body` / `req.user`, calls the service, calls `sendResponse` |
-| `<name>.service.ts`    | All business logic and every Prisma call for the module              |
-| `<name>.interface.ts`  | The TypeScript types for the module's payloads                       |
-
-Then mount it in `app.ts` next to the existing line:
-
-```ts
-app.use('/api/v1/doctor', DoctorRoutes)
-```
-
-Two rules keep the module boundaries useful rather than decorative:
-
-- **Controllers never call Prisma directly**, and **services never touch `req` or `res`.** If a service needs to know who's calling it, pass it the small `{ userId, email, name, role }` shape, not the whole request.
-- **Never spread `req.body` straight into a Prisma `create`/`update`.** Destructure the exact fields you expect. With no validation layer in front of the API, that destructuring is the only thing stopping someone from sending `"role": "ADMIN"` in a request body and having it stick.
-
-## Scripts
-
-```bash
-npm run dev     # start the server with auto-reload (tsx watch) — use this while developing
-npm run build   # typecheck with tsc and emit to dist/
-npm run start   # run the server once, no watching
-```
-
-There's no `npm run generate` / `migrate` / `studio` wrapper — call Prisma's CLI directly:
-
-```bash
-npx prisma generate     # regenerate the client after editing prisma/schema/
-npx prisma migrate dev  # create + apply a migration
-npx prisma studio       # browser GUI for your data, at http://localhost:5555
-```
-
-### A note on `npm run build`
-
-`npm run build` is useful for catching type errors, but its output isn't directly runnable with `node`. The codebase uses extensionless relative imports (`from './app'`), which `tsx` resolves fine but Node's native ESM loader doesn't — running `node dist/src/server.js` fails with `ERR_UNSUPPORTED_DIR_IMPORT`. That's why `npm run start` runs the TypeScript source through `tsx` rather than executing `dist/`.
-
-## Troubleshooting
-
-**`Cannot find module '.../src/generated/prisma/client'`**
-Run `npx prisma generate` — see step 3 of [Getting started](#getting-started).
-
-**`Can't reach database server` / `ECONNREFUSED`**
-Postgres isn't running, or `DATABASE_URL` points somewhere it can't reach. Confirm with `pg_isready -h localhost -p 5432`.
-
-**`P1010: User was denied access on the database`**
-The username or password in `DATABASE_URL` doesn't match a real role on your Postgres server. `psql -c '\du'` lists the roles that actually exist; `whoami` gives you your OS username, which is usually your local superuser with no password.
-
-**Login or register throws instead of returning a token**
-Check that `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are actually set in your `.env` — `jsonwebtoken` throws if the signing secret is `undefined`, and this project doesn't validate environment variables on startup.
+Housing & Roommate Platform backend using your preferred stack:
+
+TypeScript + Node.js + Express + Prisma + PostgreSQL + JWT
+
+The uploaded code is currently organized around Patient, Doctor, Appointment, etc.; authentication is the main implemented feature.
+
+Recommended House Backend Architecture
+house-backend/
+├── prisma/
+│ ├── schema/
+│ │ ├── schema.prisma
+│ │ ├── user.prisma
+│ │ ├── property.prisma
+│ │ ├── room.prisma
+│ │ ├── booking.prisma
+│ │ ├── roommate.prisma
+│ │ ├── payment.prisma
+│ │ ├── review.prisma
+│ │ ├── favorite.prisma
+│ │ └── enums.prisma
+│ └── migrations/
+│
+├── src/
+│ ├── server.ts
+│ ├── app.ts
+│ │
+│ └── app/
+│ ├── config/
+│ │ └── index.ts
+│ │
+│ ├── lib/
+│ │ └── prisma.ts
+│ │
+│ ├── middleware/
+│ │ ├── checkAuth.ts
+│ │ ├── globalErrorHandler.ts
+│ │ └── notFound.ts
+│ │
+│ ├── utils/
+│ │ ├── catchAsync.ts
+│ │ ├── jwt.ts
+│ │ ├── sendResponse.ts
+│ │ └── pagination.ts
+│ │
+│ └── module/
+│ ├── auth/
+│ │ ├── auth.route.ts
+│ │ ├── auth.controller.ts
+│ │ ├── auth.service.ts
+│ │ └── auth.interface.ts
+│ │
+│ ├── user/
+│ │ ├── user.route.ts
+│ │ ├── user.controller.ts
+│ │ ├── user.service.ts
+│ │ └── user.interface.ts
+│ │
+│ ├── property/
+│ │ ├── property.route.ts
+│ │ ├── property.controller.ts
+│ │ ├── property.service.ts
+│ │ └── property.interface.ts
+│ │
+│ ├── room/
+│ ├── booking/
+│ ├── roommate/
+│ ├── payment/
+│ ├── review/
+│ ├── favorite/
+│ └── admin/
+│
+├── .env
+├── .env.example
+├── package.json
+├── tsconfig.json
+└── prisma.config.ts
+
+Your original project already uses the useful route → controller → service → interface separation, and I recommend keeping that architecture for the House backend.
+
+House Platform Roles
+
+I would change:
+
+SUPER_ADMIN
+ADMIN
+DOCTOR
+PATIENT
+
+to:
+
+SUPER_ADMIN
+ADMIN
+PROVIDER
+CUSTOMER
+
+Where:
+
+CUSTOMER — searches properties, rooms and roommates, sends booking requests, reviews properties.
+PROVIDER — creates and manages houses/rooms, manages booking requests.
+ADMIN — manages users, properties, bookings, reports and disputes.
+SUPER_ADMIN — complete system administration.
+Main Prisma Models
+User
+├── CustomerProfile
+└── ProviderProfile
+
+Provider
+└── Property
+├── PropertyImage
+├── Room
+│ └── Booking
+├── Amenity
+├── Favorite
+└── Review
+
+Customer
+├── Booking
+├── Favorite
+├── Review
+└── RoommateProfile
+
+Payment
+└── Booking
+Main API
+AUTH
+POST /api/v1/auth/register
+POST /api/v1/auth/login
+POST /api/v1/auth/refresh-token
+GET /api/v1/auth/me
+POST /api/v1/auth/logout
+
+USERS
+GET /api/v1/users
+GET /api/v1/users/:id
+PATCH /api/v1/users/:id
+DELETE /api/v1/users/:id
+
+PROPERTIES
+POST /api/v1/properties
+GET /api/v1/properties
+GET /api/v1/properties/:id
+PATCH /api/v1/properties/:id
+DELETE /api/v1/properties/:id
+
+ROOMS
+POST /api/v1/properties/:propertyId/rooms
+GET /api/v1/properties/:propertyId/rooms
+GET /api/v1/rooms/:id
+PATCH /api/v1/rooms/:id
+DELETE /api/v1/rooms/:id
+
+BOOKINGS
+POST /api/v1/bookings
+GET /api/v1/bookings
+GET /api/v1/bookings/:id
+PATCH /api/v1/bookings/:id/status
+DELETE /api/v1/bookings/:id
+
+ROOMMATES
+POST /api/v1/roommates/profile
+GET /api/v1/roommates
+GET /api/v1/roommates/:id
+PATCH /api/v1/roommates/:id
+
+FAVORITES
+POST /api/v1/favorites
+GET /api/v1/favorites
+DELETE /api/v1/favorites/:id
+
+REVIEWS
+POST /api/v1/reviews
+GET /api/v1/properties/:propertyId/reviews
+PATCH /api/v1/reviews/:id
+DELETE /api/v1/reviews/:id
+
+PAYMENTS
+POST /api/v1/payments/create
+POST /api/v1/payments/webhook
+GET /api/v1/payments
+GET /api/v1/payments/:id
+
+ADMIN
+GET /api/v1/admin/dashboard
+GET /api/v1/admin/users
+GET /api/v1/admin/properties
+GET /api/v1/admin/bookings
+PATCH /api/v1/admin/users/:id/status
+PATCH /api/v1/admin/properties/:id/status
+Professional Prisma User starting point
+model User {
+id String @id @default(uuid())
+name String
+email String @unique
+password String
+phone String?
+profileImage String?
+role Role @default(CUSTOMER)
+status UserStatus @default(ACTIVE)
+
+customerProfile CustomerProfile?
+providerProfile ProviderProfile?
+
+bookings Booking[]
+reviews Review[]
+favorites Favorite[]
+payments Payment[]
+
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+isDeleted Boolean @default(false)
+deletedAt DateTime?
+
+@@index([email])
+@@index([role])
+@@index([status])
+@@map("users")
+}
+
+model CustomerProfile {
+id String @id @default(uuid())
+userId String @unique
+occupation String?
+budget Decimal?
+preferredArea String?
+bio String?
+
+user User @relation(fields: [userId], references: [id])
+
+roommateProfile RoommateProfile?
+
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+}
+
+model ProviderProfile {
+id String @id @default(uuid())
+userId String @unique
+businessName String?
+address String?
+description String?
+
+user User @relation(fields: [userId], references: [id])
+properties Property[]
+
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+}
+
+And the enums:
+
+enum Role {
+SUPER_ADMIN
+ADMIN
+PROVIDER
+CUSTOMER
+}
+
+enum UserStatus {
+ACTIVE
+BLOCKED
+SUSPENDED
+}
+
+This keeps the professional configuration pattern from the supplied backend—centralized environment configuration, shared Prisma client, JWT middleware, global error handling, and standardized responses.
+
+I can take this one step further and convert the entire uploaded backend specification into the actual House Backend source code, including:
+
+Complete Prisma schema
+Auth module
+Customer module
+Provider module
+Property module
+Room module
+Booking module
+Roommate module
+Favorite module
+Review module
+Payment module
+Admin module
+JWT role-based authorization
+Validation with Zod
+Pagination/search/filter
+Professional error handling
+Postman API structure
+Seed/admin account
+.env.example
+package.json, tsconfig.json, Prisma config
+Complete app.ts and server.ts
